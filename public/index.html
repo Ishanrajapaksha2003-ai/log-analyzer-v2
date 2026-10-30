@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log Analyzer v2</title>
+<style>html,body{margin:0}</style>
+</head>
+<body>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* Layout: instrument-panel dashboard. Summary strip first, then timeline, then triage (IPs + feed), then export and settings. */
+  :root {
+    --bg:#0d1219; --surface:#151c26; --surface-2:#1b2431; --line:#263243;
+    --fg:#e4e9f0; --muted:#8a97a9; --accent:#6aa5ff; --accent-ink:#0d1219;
+    --crit:#ff5d5d; --high:#ff9547; --med:#f2c14e; --low:#6aa5ff; --ok:#3ecf8e; --on-sev:#0d1219;
+    --font-display:'Barlow Condensed','Arial Narrow',sans-serif;
+    --font-body:'IBM Plex Sans',system-ui,sans-serif;
+    --font-mono:'IBM Plex Mono',ui-monospace,Menlo,Consolas,monospace;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+    --bg:#f3f5f8; --surface:#ffffff; --surface-2:#eef1f5; --line:#d6dce5;
+    --fg:#161d27; --muted:#5d6b7e; --accent:#2457c5; --accent-ink:#ffffff;
+    --crit:#c9302c; --high:#c2570c; --med:#946c00; --low:#2457c5; --ok:#117a4d; --on-sev:#ffffff; color-scheme: light; } }
+  :root[data-theme="light"] {
+    --bg:#f3f5f8; --surface:#ffffff; --surface-2:#eef1f5; --line:#d6dce5;
+    --fg:#161d27; --muted:#5d6b7e; --accent:#2457c5; --accent-ink:#ffffff;
+    --crit:#c9302c; --high:#c2570c; --med:#946c00; --low:#2457c5; --ok:#117a4d; --on-sev:#ffffff; color-scheme: light; }
+
+  * { box-sizing: border-box; }
+  body { background:var(--bg); color:var(--fg); font-family:var(--font-body); font-size:14px; line-height:1.5;
+    padding-block: 20px 56px; padding-left:max(16px, env(safe-area-inset-left, 0px)); padding-right:max(16px, env(safe-area-inset-right, 0px)); }
+  .wrap { max-width:1180px; margin:0 auto; display:grid; gap:16px; }
+  h1,h2 { font-family:var(--font-display); font-weight:600; margin:0; text-wrap:balance; }
+  h1 { font-size:30px; letter-spacing:.01em; line-height:1.1; }
+  h2 { font-size:15px; letter-spacing:.09em; text-transform:uppercase; color:var(--muted); }
+  p { margin:0; }
+  .mono { font-family:var(--font-mono); font-size:12px; overflow-wrap:anywhere; }
+  .muted { color:var(--muted); }
+
+  header { display:flex; justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap; }
+  .src { display:flex; align-items:center; gap:8px; margin-top:6px; color:var(--muted); font-size:13px; flex-wrap:wrap; }
+  .tag { font-family:var(--font-mono); font-size:11px; padding:2px 8px; border:1px solid var(--line); border-radius:4px; color:var(--muted); }
+  .tag.live { color:var(--ok); border-color:var(--ok); }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; }
+  button, .btn { font:inherit; font-weight:500; font-size:13px; padding:8px 14px; border-radius:6px; border:1px solid var(--line);
+    background:var(--surface); color:var(--fg); cursor:pointer; }
+  button:hover, .btn:hover { background:var(--surface-2); }
+  button.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+  button.primary:hover { filter:brightness(1.1); background:var(--accent); }
+  button.danger { background:var(--crit); color:var(--on-sev); border-color:var(--crit); }
+  button.sm { padding:3px 9px; font-size:12px; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+  .card { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:16px; min-width:0; }
+  .card-head { display:flex; justify-content:space-between; align-items:baseline; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+
+  .kpis { display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .kpi { background:var(--surface); padding:14px 16px; }
+  .kpi span { display:block; font-size:11px; letter-spacing:.09em; text-transform:uppercase; color:var(--muted); }
+  .kpi b { display:block; font-family:var(--font-display); font-size:38px; font-weight:600; line-height:1.1; font-variant-numeric:tabular-nums; }
+  @media (max-width:720px) { .kpis { grid-template-columns:repeat(2, minmax(0,1fr)); } .kpi:last-child { grid-column:1 / -1; } }
+
+  .split { display:grid; grid-template-columns:minmax(0,5fr) minmax(0,3fr); gap:16px; }
+  .split.even { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+  @media (max-width:860px) { .split, .split.even { grid-template-columns:minmax(0,1fr); } }
+
+  .chart-label { display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin:8px 0 2px; }
+  svg { display:block; width:100%; height:auto; }
+  svg text { font-family:var(--font-mono); font-size:10px; fill:var(--muted); }
+  .grid-line { stroke:var(--line); stroke-width:1; }
+
+  .type-row { display:grid; grid-template-columns:130px minmax(0,1fr) 36px; align-items:center; gap:10px; padding:6px 0; }
+  .type-row .bar { height:10px; background:var(--surface-2); border-radius:2px; overflow:hidden; }
+  .type-row .bar i { display:block; height:100%; }
+  .type-row b { text-align:right; font-variant-numeric:tabular-nums; font-family:var(--font-mono); font-size:12px; font-weight:500; }
+
+  .scroll { overflow:auto; max-height:380px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { position:sticky; top:0; background:var(--surface); font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:500; }
+  td.num { font-variant-numeric:tabular-nums; }
+  .empty { text-align:center; color:var(--muted); padding:28px 8px; }
+  .sev { display:inline-block; padding:1px 8px; border-radius:3px; font-size:11px; font-weight:600; color:var(--on-sev); white-space:nowrap; }
+  .sev.critical { background:var(--crit); } .sev.high { background:var(--high); } .sev.medium { background:var(--med); } .sev.low { background:var(--low); }
+  .risk { display:flex; align-items:center; gap:8px; min-width:92px; }
+  .risk .bar { flex:1; height:6px; background:var(--surface-2); border-radius:2px; overflow:hidden; min-width:36px; }
+  .risk .bar i { display:block; height:100%; }
+  .risk b { font-family:var(--font-mono); font-size:12px; font-weight:500; width:24px; text-align:right; }
+  .state-b { color:var(--crit); font-weight:600; font-size:12px; } .state-i { color:var(--muted); font-size:12px; }
+  .row-actions { display:flex; gap:6px; flex-wrap:wrap; }
+
+  textarea, select, input[type=number] { font:inherit; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:8px 10px; width:100%; }
+  textarea { font-family:var(--font-mono); font-size:12px; resize:vertical; min-height:110px; }
+  select { width:auto; }
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+  .cfg { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:12px; align-items:end; }
+  .bar-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+  .note { font-size:12px; color:var(--muted); margin-top:8px; }
+
+  .toasts { position:fixed; right:max(12px, env(safe-area-inset-right, 0px)); top:calc(12px + env(safe-area-inset-top, 0px)); width:min(320px, calc(100vw - 24px)); display:grid; gap:8px; z-index:20; pointer-events:none; }
+  .toast { background:var(--surface-2); border:1px solid var(--line); border-left:4px solid var(--crit); border-radius:6px; padding:8px 12px; font-size:12px; animation:slide .2s ease-out; }
+  @keyframes slide { from { transform:translateX(24px); opacity:0; } to { transform:none; opacity:1; } }
+  @media (prefers-reduced-motion: reduce) { .toast { animation:none; } }
+</style>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Log Analyzer v2</h1>
+      <div class="src"><span id="srcName">-</span><span class="tag" id="srcTag">-</span><span class="tag" id="connTag">connecting</span></div>
+    </div>
+    <div class="actions">
+      <input type="file" id="fileIn" accept=".log,.txt,text/plain" hidden>
+      <button class="primary" id="btnUpload">Upload log file</button>
+      <button id="btnPaste">Paste log</button>
+      <button id="btnSim">Run live simulation</button>
+      <button id="btnCsv">Export alerts CSV</button>
+      <button id="btnReset">Reset</button>
+    </div>
+  </header>
+
+  <section class="card" id="pasteBox" hidden>
+    <div class="card-head"><h2>Paste log lines</h2><span class="muted">Apache / Nginx combined format</span></div>
+    <label for="pasteArea" class="muted">Log text</label>
+    <textarea id="pasteArea" spellcheck="false" placeholder='203.0.113.9 - - [30/Oct/2026:12:00:01 +0000] "GET /products?id=1%27%20OR%201=1-- HTTP/1.1" 200 512 "-" "Mozilla/5.0"'></textarea>
+    <div class="bar-row" style="margin-top:10px"><button class="primary" id="btnAnalyzePaste">Analyze</button><button id="btnClosePaste">Cancel</button><span class="muted" id="pasteMsg"></span></div>
+  </section>
+
+  <div class="kpis" id="kpis">
+    <div class="kpi"><span>Requests</span><b id="kReq">0</b></div>
+    <div class="kpi"><span>Alerts</span><b id="kAlerts" style="color:var(--high)">0</b></div>
+    <div class="kpi"><span>Critical</span><b id="kCrit" style="color:var(--crit)">0</b></div>
+    <div class="kpi"><span>Suspicious IPs</span><b id="kIps" style="color:var(--med)">0</b></div>
+    <div class="kpi"><span>Suggested blocks</span><b id="kBlock" style="color:var(--ok)">0</b></div>
+  </div>
+
+  <div class="split">
+    <section class="card">
+      <div class="card-head"><h2>Traffic per minute</h2><span class="muted" id="timeNote">UTC</span></div>
+      <div class="chart-label"><span>Requests</span><span id="reqMax"></span></div>
+      <div id="chartReq"></div>
+      <div class="chart-label"><span>Alerts</span><span id="altMax"></span></div>
+      <div id="chartAlt"></div>
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>Attack types</h2></div>
+      <div id="types"></div>
+    </section>
+  </div>
+
+  <div class="split even">
+    <section class="card">
+      <div class="card-head"><h2>IP risk and blocklist</h2><span class="muted" id="ipNote"></span></div>
+      <div class="scroll"><table><thead><tr><th>IP</th><th>Risk</th><th>Seen as</th><th></th></tr></thead><tbody id="ipBody"></tbody></table></div>
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>Alert feed</h2><span class="muted" id="feedNote"></span></div>
+      <div class="scroll"><table><thead><tr><th>Time</th><th>IP</th><th>Type</th><th>Request</th></tr></thead><tbody id="feedBody"></tbody></table></div>
+    </section>
+  </div>
+
+  <div class="split even">
+    <section class="card">
+      <div class="card-head"><h2>Export blocklist</h2><span class="muted" id="expNote"></span></div>
+      <div class="bar-row">
+        <label for="fmt" style="margin:0">Format</label>
+        <select id="fmt"><option value="nginx">nginx</option><option value="htaccess">.htaccess</option><option value="iptables">iptables</option><option value="txt">Plain list</option></select>
+        <button id="btnCopyBlock">Copy</button>
+        <button id="btnDownload">Download file</button>
+      </div>
+      <label for="expOut" class="muted">Approved IPs</label>
+      <textarea id="expOut" readonly spellcheck="false" style="min-height:96px"></textarea>
+      <p class="note" id="copyMsg">Click Block next to an IP to add it here.</p>
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>Detection thresholds</h2></div>
+      <div class="cfg">
+        <div><label for="bfT">Failed logins to flag</label><input type="number" id="bfT" min="2" max="1000"></div>
+        <div><label for="bfW">Within (seconds)</label><input type="number" id="bfW" min="5" max="3600"></div>
+        <div><label for="rcT">404s to flag as scanning</label><input type="number" id="rcT" min="2" max="1000"></div>
+        <div><label for="rcW">Within (seconds)</label><input type="number" id="rcW" min="5" max="3600"></div>
+        <div><label for="riskT">Block suggestion score</label><input type="number" id="riskT" min="1" max="100"></div>
+        <div><button class="primary" id="btnApply">Apply and re-analyze</button></div>
+      </div>
+      <p class="note" id="cfgMsg">Detection runs on the Node server. Log files stay on your machine.</p>
+    </section>
+  </div>
+
+  <section class="card">
+    <div class="card-head"><h2>Saved analyses</h2><span class="muted">stored in MySQL when available</span></div>
+    <div class="scroll"><table><thead><tr><th>Date</th><th>Source</th><th>Requests</th><th>Alerts</th></tr></thead><tbody id="histBody"></tbody></table></div>
+  </section>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
